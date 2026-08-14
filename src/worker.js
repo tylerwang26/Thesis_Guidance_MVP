@@ -53,9 +53,64 @@ async function api(request, env, path) {
   return json({ error: '找不到 API' }, 404);
 }
 
-const html = `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>論文指導工作台</title><style>
+function escHtml(s) {
+  const val = s !== null && s !== undefined ? String(s) : '';
+  return val.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function zhDate(s) {
+  if (!s) return '';
+  const parts = s.split('-');
+  if (parts.length === 3) return `${parseInt(parts[1], 10)}月${parseInt(parts[2], 10)}日`;
+  return s;
+}
+
+function daysLeft(s) {
+  if (!s) return 999;
+  const target = new Date(s.replace(/-/g, '/') + ' 23:59:59').getTime();
+  if (Number.isNaN(target)) return 999;
+  return Math.ceil((target - Date.now()) / 86400000);
+}
+
+function riskClass(deadline) {
+  const d = daysLeft(deadline);
+  if (d < 0) return 'red';
+  if (d <= 5) return 'yellow';
+  return 'green';
+}
+
+function riskText(deadline) {
+  const cls = riskClass(deadline);
+  if (cls === 'red') return '逾期';
+  if (cls === 'yellow') return '5日內';
+  return '進度穩定';
+}
+
+function renderFallback(state, role) {
+  if (!state) return '<p id="loading">載入中…</p>';
+  if (role === 'supervisor') {
+    const pending = state.decisions.filter(x => x.status === 'pending').sort((a, b) => a.deadline.localeCompare(b.deadline));
+    const inbox = pending.length
+      ? pending.map(d => `<div class="item"><div class="item-title">${escHtml(d.id)} · ${escHtml(d.topic)} <span class="badge ${riskClass(d.deadline)}">${riskText(d.deadline)}</span></div><div style="margin-top:4px">${escHtml(d.question)}</div><div class="meta">教授閱讀約 ${escHtml(d.readingMinutes)} 分鐘 · 截止 ${zhDate(d.deadline)}</div></div>`).join('')
+      : '<div class="empty">目前沒有待決策事項。</div>';
+    return `<section class="hero"><div><h2>${escHtml(state.profile.supervisorName)}，您好</h2><p>相容模式（已先載入內容）</p></div></section><section class="card"><h3>待決策收件匣</h3><div class="list">${inbox}</div></section>`;
+  }
+  const openActions = state.actions.filter(x => x.status === 'open');
+  const milestones = state.milestones.map(m => `<div class="item"><div class="item-title">${escHtml(m.id)} · ${escHtml(m.title)} <span class="badge ${riskClass(m.deadline)}">${riskText(m.deadline)}</span></div><div class="meta">截止 ${zhDate(m.deadline)} · ${escHtml(m.deliverable)}</div></div>`).join('');
+  const actions = openActions.length
+    ? openActions.map(a => `<div class="item"><div class="item-title">${escHtml(a.title)}</div><div class="meta">截止 ${zhDate(a.deadline)}</div></div>`).join('')
+    : '<div class="empty">暫無待辦</div>';
+  return `<section class="hero"><div><h2>你好，${escHtml(state.profile.studentName)}</h2><p>${escHtml(state.profile.title)} · 目標口試 ${zhDate(state.profile.targetDefense)}</p></div></section><section class="grid two"><div class="card"><h3>Thesis Roadmap</h3><div class="list">${milestones}</div></div><div class="card"><h3>我的 Action Items</h3><div class="list">${actions}</div></div></section>`;
+}
+
+function safeJson(data) {
+  return JSON.stringify(data).replace(/</g, '\\u003c');
+}
+
+function html(initialState, initialRole) {
+return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>論文指導工作台</title><style>
 :root{--ink:#192636;--muted:#657486;--line:#e3e9ee;--bg:#f5f7f8;--blue:#176b87;--green:#16845b;--yellow:#b77900;--red:#bf3d3d}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Noto Sans TC",sans-serif}header{background:#102b3b;color:white;padding:20px max(24px,calc((100vw - 1160px)/2));display:flex;justify-content:space-between;align-items:center}header h1{font-size:20px;margin:0}header small{opacity:.75}nav a{color:white;text-decoration:none;padding:8px 12px;border:1px solid #ffffff45;border-radius:7px;margin-left:8px}main{max-width:1160px;margin:26px auto;padding:0 20px}.hero{display:flex;justify-content:space-between;align-items:end;margin-bottom:22px}.hero h2{margin:0;font-size:27px}.hero p{margin:3px 0;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.two{grid-template-columns:1.2fr .8fr}.card{background:white;border:1px solid var(--line);border-radius:12px;padding:18px}.card h3{margin:0 0 13px;font-size:16px}.stat{font-size:27px;font-weight:750}.muted{color:var(--muted);font-size:13px}.list{display:grid;gap:10px}.item{border-top:1px solid var(--line);padding:11px 0}.item:first-child{border:0;padding-top:0}.item-title{font-weight:680}.meta{color:var(--muted);font-size:13px;margin-top:3px}.badge{display:inline-block;font-size:12px;font-weight:700;border-radius:100px;padding:2px 8px}.green{color:var(--green);background:#e5f5ee}.yellow{color:var(--yellow);background:#fff4d8}.red{color:var(--red);background:#fce8e8}.blue{color:var(--blue);background:#e2f1f5}button{border:0;background:var(--blue);color:white;border-radius:7px;padding:8px 11px;font:inherit;cursor:pointer}button.secondary{background:white;color:var(--blue);border:1px solid #b8cbd3}button.danger{background:var(--red)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}dialog{border:0;border-radius:13px;box-shadow:0 14px 50px #0004;width:min(600px,92vw);padding:23px}dialog::backdrop{background:#102b3b88}label{font-weight:650;display:block;margin-top:11px}input,textarea,select{font:inherit;width:100%;padding:8px;border:1px solid #bcc8d0;border-radius:7px;margin-top:4px}textarea{min-height:72px}.riskbar{height:8px;background:#edf0f2;border-radius:8px;overflow:hidden;margin:8px 0}.riskbar span{display:block;height:100%;background:var(--green)}.empty{padding:16px;color:var(--muted);text-align:center}@media(max-width:760px){.grid,.two{grid-template-columns:1fr}header{align-items:flex-start;gap:12px;flex-direction:column}.hero{align-items:flex-start;gap:12px;flex-direction:column}nav a:first-child{margin-left:0}}
-</style></head><body><header><div><h1>論文指導工作台</h1></div><nav><a href="/student">學生工作台</a><a href="/supervisor">教授收件匣</a></nav></header><main id="app"><p id="loading">載入中…</p></main><dialog id="modal"></dialog><script>
+</style></head><body><header><div><h1>論文指導工作台</h1></div><nav><a href="/student">學生工作台</a><a href="/supervisor">教授收件匣</a></nav></header><main id="app">${renderFallback(initialState, initialRole)}</main><dialog id="modal"></dialog><script>window.__INITIAL_STATE__=${safeJson(initialState)};window.__ROLE__=${JSON.stringify(initialRole)};</script><script>
 window.onerror = function(msg, url, line, col, error) {
   var p = document.getElementById('loading') || document.querySelector('#app p');
   if (p) p.innerText = 'Syntax Error: ' + msg + ' (Line ' + line + ')';
@@ -65,7 +120,7 @@ window.onunhandledrejection = function(e) {
   if (p) p.innerText = 'Async Error: ' + (e.reason ? e.reason.message || e.reason : 'Unknown');
 };
 
-var state, role = location.pathname.indexOf('supervisor') > -1 ? 'supervisor' : 'student';
+var state = window.__INITIAL_STATE__ || null, role = window.__ROLE__ || (location.pathname.indexOf('supervisor') > -1 ? 'supervisor' : 'student');
 var app = document.querySelector('#app'), modal = document.querySelector('#modal');
 
 var esc = function(s) {
@@ -256,6 +311,8 @@ window.doneAction = function(id) {
   });
 };
 
+if (state) { render(); }
 load();
 </script></body></html>`;
-export default { async fetch(request, env) { const url = new URL(request.url); if (url.pathname.startsWith('/api/')) return api(request, env, url.pathname); return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } }); } };
+}
+export default { async fetch(request, env) { const url = new URL(request.url); if (url.pathname.startsWith('/api/')) return api(request, env, url.pathname); const role = url.pathname.indexOf('supervisor') > -1 ? 'supervisor' : 'student'; const state = await workspace(env); return new Response(html(state, role), { headers: { 'content-type': 'text/html; charset=utf-8' } }); } };
