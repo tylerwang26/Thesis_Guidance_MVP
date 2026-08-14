@@ -208,6 +208,40 @@ function defaultWorkspaceForProfessor(user, profileInput = {}) {
   };
 }
 
+function defaultWorkspaceForStudent(user, profileInput = {}) {
+  return {
+    id: id('ws'),
+    professorId: null,
+    studentIds: [user.id],
+    profile: {
+      title: profileInput.title || '尚未設定題目',
+      school: profileInput.school || '',
+      department: profileInput.department || '',
+      researchFocus: profileInput.researchFocus || '',
+      targetDefense: profileInput.targetDefense || '',
+      studentName: user.name,
+      supervisorName: ''
+    },
+    milestones: [
+      { id: 'M-01', title: '研究缺口定稿', deadline: '', status: 'not_started', deliverable: '一頁研究缺口聲明', approvalRequired: true },
+      { id: 'M-02', title: '研究問題凍結', deadline: '', status: 'not_started', deliverable: 'RQ vFinal', approvalRequired: true },
+      { id: 'M-03', title: '理論架構', deadline: '', status: 'not_started', deliverable: '概念架構圖與假設', approvalRequired: true },
+      { id: 'M-04', title: '研究方法 v1', deadline: '', status: 'not_started', deliverable: '方法章草稿', approvalRequired: true }
+    ],
+    decisions: [],
+    actions: [],
+    weeklyBrief: {
+      weekOf: '',
+      summary: '',
+      wins: [],
+      risks: [],
+      nextSteps: []
+    },
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
+}
+
 function parseJsonOrNull(request) {
   return request.json().catch(() => null);
 }
@@ -345,16 +379,28 @@ async function handleApi(request, env, path) {
     const gate = await requireSession(request, env);
     if (gate.error) return gate.error;
     const user = gate.session.user;
-    if (user.role !== 'professor') return bad('僅教授可建立邀請', 403);
+    const body = await parseJsonOrNull(request);
+    const targetRole = body && body.targetRole === 'professor' ? 'professor' : 'student';
 
-    const workspace = await getWorkspaceForUser(env, user);
-    if (!workspace) return bad('教授尚未建立 workspace', 400);
+    if (targetRole !== 'student' && targetRole !== 'professor') return bad('targetRole 不合法');
+    if (user.role === 'professor' && targetRole !== 'student') return bad('教授僅能邀請學生', 403);
+    if (user.role === 'student' && targetRole !== 'professor') return bad('學生僅能邀請教授', 403);
+
+    let workspace = await getWorkspaceForUser(env, user);
+    if (!workspace && user.role === 'student') {
+      workspace = defaultWorkspaceForStudent(user, {});
+      await saveWorkspace(env, workspace);
+      await putJsonKV(env, `v2:user_workspace:${user.id}`, { workspaceId: workspace.id });
+    }
+    if (!workspace) return bad('尚未建立 workspace', 400);
+    if (targetRole === 'professor' && workspace.professorId) return bad('此 workspace 已有教授', 409);
 
     const code = `INV-${randomHex(4).toUpperCase()}`;
     const invite = {
       code,
       workspaceId: workspace.id,
       professorId: user.id,
+      targetRole,
       createdAt: nowIso(),
       expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 14,
       usedBy: null
@@ -367,7 +413,6 @@ async function handleApi(request, env, path) {
     const gate = await requireSession(request, env);
     if (gate.error) return gate.error;
     const user = gate.session.user;
-    if (user.role !== 'student') return bad('僅學生可接受邀請', 403);
 
     const body = await parseJsonOrNull(request);
     if (!body || !body.code) return bad('請提供邀請碼');
@@ -375,12 +420,21 @@ async function handleApi(request, env, path) {
     const invite = await getJsonKV(env, `v2:invite:${code}`);
     if (!invite) return bad('邀請碼不存在', 404);
     if (invite.expiresAt < Date.now()) return bad('邀請碼已過期', 400);
+    const inviteTargetRole = invite.targetRole || 'student';
+    if (inviteTargetRole !== user.role) return bad('此邀請碼不是給你的角色使用', 403);
 
     const workspace = await getJsonKV(env, `v2:workspace:${invite.workspaceId}`);
     if (!workspace) return bad('workspace 不存在', 404);
 
-    if (workspace.studentIds.indexOf(user.id) < 0) workspace.studentIds.push(user.id);
-    if (!workspace.profile.studentName) workspace.profile.studentName = user.name;
+    if (user.role === 'student') {
+      if (workspace.studentIds.indexOf(user.id) < 0) workspace.studentIds.push(user.id);
+      if (!workspace.profile.studentName) workspace.profile.studentName = user.name;
+    } else if (user.role === 'professor') {
+      if (workspace.professorId && workspace.professorId !== user.id) return bad('此 workspace 已有教授', 409);
+      workspace.professorId = user.id;
+      workspace.profile.supervisorName = user.name;
+    }
+
     await saveWorkspace(env, workspace);
     invite.usedBy = user.id;
     invite.usedAt = nowIso();
@@ -591,8 +645,8 @@ function dashboardShell(user, workspace, pendingCount) {
   const milestones = workspace ? workspace.milestones : [];
 
   const inviteSection = user.role === 'professor'
-    ? `<div class="card"><h3>學生邀請</h3><div class="muted">產生邀請碼，給學生註冊後加入</div><button onclick="createInvite()">產生邀請碼</button><div id="inviteOut" class="muted" style="margin-top:8px"></div></div>`
-    : `<div class="card"><h3>加入教授 workspace</h3><input id="acceptCode" placeholder="INV-XXXX"><button onclick="acceptInvite()">加入</button></div>`;
+    ? `<div class="card"><h3>學生邀請</h3><div class="muted">產生邀請碼，給學生加入</div><button onclick="createInvite('student')">產生學生邀請碼</button><div class="muted" style="margin-top:8px">若你收到學生邀請碼，也可在下方加入：</div><input id="acceptCode" placeholder="INV-XXXX"><button class="sec" onclick="acceptInvite()">用邀請碼加入</button><div id="inviteOut" class="muted" style="margin-top:8px"></div></div>`
+    : `<div class="card"><h3>邀請與加入</h3><div class="muted">你可以加入教授 workspace，或產生邀請碼給教授加入你</div><input id="acceptCode" placeholder="教授給你的 INV-XXXX"><button onclick="acceptInvite()">加入教授 workspace</button><button class="sec" onclick="createInvite('professor')">產生教授邀請碼</button><div id="inviteOut" class="muted" style="margin-top:8px"></div></div>`;
 
   const lineSection = user.role === 'professor'
     ? `<div class="card"><h3>LINE 通知設定</h3><label>LINE User ID<input id="lineUserId" value="${esc(user.lineUserId || '')}" placeholder="Uxxxxxxxx"></label><label><input id="lineEnabled" type="checkbox" ${user.lineNotifyEnabled ? 'checked' : ''} style="width:auto"> 啟用更新通知</label><button onclick="saveLine()">儲存 LINE 設定</button><div class="muted">更新事件：新決策請求、週報更新</div></div>`
@@ -620,7 +674,7 @@ function req(url,opt){opt=opt||{};return fetch(url,Object.assign({headers:{'cont
 function reload(){location.reload()}
 function logout(){req('/api/auth/logout',{method:'POST'}).then(()=>location.href='/').catch(e=>show(e.message))}
 function saveProfile(){req('/api/profile',{method:'PATCH',body:JSON.stringify({title:val('pTitle'),school:val('pSchool'),department:val('pDept'),researchFocus:val('pFocus'),targetDefense:val('pDefense')})}).then(()=>{show('已儲存');reload()}).catch(e=>show(e.message))}
-function createInvite(){req('/api/invites',{method:'POST'}).then(r=>{document.getElementById('inviteOut').innerText='邀請碼：'+r.invite.code+'（14天有效）';}).catch(e=>show(e.message))}
+function createInvite(targetRole){req('/api/invites',{method:'POST',body:JSON.stringify({targetRole:targetRole})}).then(r=>{document.getElementById('inviteOut').innerText='邀請碼：'+r.invite.code+'（14天有效，目標：'+r.invite.targetRole+'）';}).catch(e=>show(e.message))}
 function acceptInvite(){req('/api/invites/accept',{method:'POST',body:JSON.stringify({code:val('acceptCode')})}).then(()=>{show('加入成功');reload()}).catch(e=>show(e.message))}
 function saveLine(){req('/api/me/line',{method:'PATCH',body:JSON.stringify({lineUserId:val('lineUserId'),lineNotifyEnabled:document.getElementById('lineEnabled').checked})}).then(()=>show('LINE 設定已更新')).catch(e=>show(e.message))}
 function createDecision(){req('/api/decisions',{method:'POST',body:JSON.stringify({topic:val('dTopic'),question:val('dQuestion'),recommendation:val('dRec'),options:val('dOpts').split('｜').filter(Boolean),evidence:val('dEvi'),readingMinutes:Number(val('dMins')||3),deadline:val('dDeadline')})}).then(()=>{show('已送出');reload()}).catch(e=>show(e.message))}
@@ -640,7 +694,10 @@ async function handlePage(request, env, path) {
     const user = sess.user;
     const workspace = await getWorkspaceForUser(env, user);
     if (!workspace) {
-      return html(`<!doctype html><html><body style="font-family:sans-serif;padding:20px"><h2>尚未加入 workspace</h2><p>學生請使用邀請碼加入；教授請先建立帳號後登入。</p><p><a href="/">回首頁</a></p></body></html>`);
+      if (user.role === 'student') {
+        return html(`<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>加入或邀請</title><style>body{font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;padding:20px;background:#f4f7f9}section{max-width:620px;background:#fff;border:1px solid #d8e1e8;border-radius:12px;padding:16px}input,button{font:inherit}input{width:100%;padding:8px;border:1px solid #b9c6d1;border-radius:8px;margin:8px 0}button{border:0;background:#156d8a;color:#fff;border-radius:8px;padding:9px 12px;margin-right:8px;cursor:pointer}.sec{background:#fff;color:#156d8a;border:1px solid #bfd0db}.muted{color:#617486;font-size:13px}</style></head><body><section><h2>你還沒有 workspace</h2><p class="muted">你可以加入教授的邀請碼，或產生邀請碼給教授加入你。</p><input id="acceptCode" placeholder="教授邀請碼 INV-XXXX"><button onclick="acceptInvite()">加入教授 workspace</button><button class="sec" onclick="createInvite()">產生教授邀請碼</button><div id="out" class="muted" style="margin-top:10px"></div><p style="margin-top:14px"><a href="/">重新整理</a></p></section><script>function req(url,opt){opt=opt||{};return fetch(url,Object.assign({headers:{'content-type':'application/json'}},opt)).then(async r=>{let j={};try{j=await r.json()}catch(e){};if(!r.ok)throw new Error((j&&j.error)||'request failed');return j;});}function acceptInvite(){req('/api/invites/accept',{method:'POST',body:JSON.stringify({code:document.getElementById('acceptCode').value})}).then(()=>location.reload()).catch(e=>document.getElementById('out').innerText=e.message)}function createInvite(){req('/api/invites',{method:'POST',body:JSON.stringify({targetRole:'professor'})}).then(r=>document.getElementById('out').innerText='教授邀請碼：'+r.invite.code+'（14天有效）').catch(e=>document.getElementById('out').innerText=e.message)}</script></body></html>`);
+      }
+      return html(`<!doctype html><html><body style="font-family:sans-serif;padding:20px"><h2>尚未加入 workspace</h2><p>請向學生索取邀請碼後加入。</p><p><a href="/">回首頁</a></p></body></html>`);
     }
     if (!canAccessWorkspace(user, workspace)) return html('<h1>403</h1>', 403);
     const pendingCount = workspace.decisions.filter((x) => x.status === 'pending').length;
