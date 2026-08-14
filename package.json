@@ -1,0 +1,14 @@
+{
+  "name": "thesis-guidance-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "單一學生與指導教授的非同步論文指導 MVP",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.38.0"
+  }
+}

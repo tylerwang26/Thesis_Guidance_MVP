@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "thesis-guidance-mvp",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-08-14",
+  "kv_namespaces": [
+    {
+      "binding": "THESIS_KV",
+      "id": "eb51e492945d422691dccc7ce2a82937"
+    }
+  ]
+}
