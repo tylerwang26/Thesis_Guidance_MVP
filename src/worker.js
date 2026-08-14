@@ -100,23 +100,44 @@ var riskLabel = function(d) {
   return tag(r === 'red' ? '逾期' : (r === 'yellow' ? '5日內' : '進度穩定'), r);
 };
 
-async function call(url, opt) {
+function call(url, opt, onSuccess, onError) {
   opt = opt || {};
-  var headers = opt.headers || {};
-  headers['content-type'] = 'application/json';
-  opt.headers = headers;
-  const r = await fetch(url, opt);
-  if (!r.ok) throw Error('儲存失敗');
-  return r.json();
+  var xhr = new XMLHttpRequest();
+  xhr.open(opt.method || 'GET', url, true);
+  xhr.setRequestHeader('content-type', 'application/json');
+  xhr.onreadystatechange = function() {
+    if (xhr.readyState !== 4) return;
+    if (xhr.status < 200 || xhr.status >= 300) {
+      onError(new Error('儲存失敗'));
+      return;
+    }
+    var data = null;
+    try {
+      data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+    } catch (err) {
+      onError(new Error('回應解析失敗'));
+      return;
+    }
+    onSuccess(data);
+  };
+  xhr.onerror = function() { onError(new Error('網路連線失敗')); };
+  xhr.send(opt.body || null);
 }
-async function load() {
-  try {
-    state = await call('/api/workspace');
+function load() {
+  call('/api/workspace', null, function(data) {
+    state = data;
     render();
-  } catch(e) {
+  }, function(e) {
     var p = document.getElementById('loading') || document.querySelector('#app p');
     if (p) p.innerText = 'Error: ' + e.message;
+  });
+}
+function findById(list, idValue) {
+  var i;
+  for (i = 0; i < list.length; i += 1) {
+    if (list[i].id === idValue) return list[i];
   }
+  return null;
 }
 function render() {
   role === 'supervisor' ? supervisor() : student();
@@ -165,12 +186,12 @@ function supervisor() {
 function decisionForm() {
   modal.innerHTML = '<form method="dialog"><h3>提出 Decision Request</h3><p class="muted">讓教授可在幾分鐘內做出清楚決定。</p><label>主題<input name="topic" required placeholder="例如：研究問題"></label><label>要教授決定什麼？<textarea name="question" required></textarea></label><label>學生建議<input name="recommendation" required></label><label>選項（以｜分隔）<input name="options" placeholder="保留｜刪除｜調整"></label><label>證據／理由<textarea name="evidence" required></textarea></label><label>預估閱讀分鐘<input name="minutes" type="number" value="3" min="1" max="30"></label><label>希望回覆截止日<input name="deadline" type="date" required></label><div class="actions"><button value="cancel" class="secondary">取消</button><button id="send">送出請求</button></div></form>';
   modal.showModal();
-  modal.querySelector('form').addEventListener('submit', async function(e) {
+  modal.querySelector('form').addEventListener('submit', function(e) {
     if (e.submitter && e.submitter.value === 'cancel') return;
     e.preventDefault();
     var f = new FormData(e.target);
     var opts = f.get('options') || '';
-    await call('/api/decisions', {
+    call('/api/decisions', {
       method: 'POST',
       body: JSON.stringify({
         topic: f.get('topic'),
@@ -181,22 +202,26 @@ function decisionForm() {
         readingMinutes: f.get('minutes'),
         deadline: f.get('deadline')
       })
+    }, function() {
+      modal.close();
+      load();
+    }, function(err) {
+      var p = document.getElementById('loading') || document.querySelector('#app p');
+      if (p) p.innerText = 'Error: ' + err.message;
     });
-    modal.close();
-    await load();
   });
 }
 
 function resolve(decisionId, status) {
-  var d = state.decisions.find(function(x) { return x.id === decisionId; });
+  var d = findById(state.decisions, decisionId);
   var titleMap = {'approved': '同意學生建議', 'alternative': '採替代方案', 'discussion': '安排討論'};
   modal.innerHTML = '<form method="dialog"><h3>' + titleMap[status] + '</h3><p>' + esc(d.question) + '</p><label>教授回覆（可選）<textarea name="response" placeholder="給學生的一句指示"></textarea></label><label>建立學生後續待辦（可選）<input name="actionTitle" placeholder="例如：依此方向修訂研究問題"></label><label>待辦截止日<input name="actionDeadline" type="date" value="' + d.deadline + '"></label><div class="actions"><button value="cancel" class="secondary">取消</button><button>確認回覆</button></div></form>';
   modal.showModal();
-  modal.querySelector('form').addEventListener('submit', async function(e) {
+  modal.querySelector('form').addEventListener('submit', function(e) {
     if (e.submitter && e.submitter.value === 'cancel') return;
     e.preventDefault();
     var f = new FormData(e.target);
-    await call('/api/decisions/' + decisionId + '/resolve', {
+    call('/api/decisions/' + decisionId + '/resolve', {
       method: 'PATCH',
       body: JSON.stringify({
         status: status,
@@ -204,19 +229,31 @@ function resolve(decisionId, status) {
         actionTitle: f.get('actionTitle'),
         actionDeadline: f.get('actionDeadline')
       })
+    }, function() {
+      modal.close();
+      load();
+    }, function(err) {
+      var p = document.getElementById('loading') || document.querySelector('#app p');
+      if (p) p.innerText = 'Error: ' + err.message;
     });
-    modal.close();
-    await load();
   });
 }
 
-window.setMilestone = async function(id, status) {
-  await call('/api/milestones/' + id, { method: 'PATCH', body: JSON.stringify({ status: status }) });
-  await load();
+window.setMilestone = function(id, status) {
+  call('/api/milestones/' + id, { method: 'PATCH', body: JSON.stringify({ status: status }) }, function() {
+    load();
+  }, function(err) {
+    var p = document.getElementById('loading') || document.querySelector('#app p');
+    if (p) p.innerText = 'Error: ' + err.message;
+  });
 };
-window.doneAction = async function(id) {
-  await call('/api/actions/' + id, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) });
-  await load();
+window.doneAction = function(id) {
+  call('/api/actions/' + id, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) }, function() {
+    load();
+  }, function(err) {
+    var p = document.getElementById('loading') || document.querySelector('#app p');
+    if (p) p.innerText = 'Error: ' + err.message;
+  });
 };
 
 load();
